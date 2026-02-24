@@ -1,6 +1,4 @@
-'use strict';
-
-const express = require('express');
+import express, { type Request, type Response } from 'express';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -8,9 +6,21 @@ app.use(express.json({ limit: '1mb' }));
 const host = process.env.CUSTOMER_HOST || '0.0.0.0';
 const port = Number.parseInt(process.env.CUSTOMER_PORT || '9000', 10);
 
-const customerStore = new Map();
+type CustomerPreferences = {
+  newsletter: boolean;
+  language: string;
+};
 
-function defaultCustomer(customerId) {
+type Customer = {
+  id: string;
+  email: string;
+  tier: 'STANDARD' | 'GOLD' | 'PLATINUM';
+  preferences: CustomerPreferences;
+};
+
+const customerStore = new Map<string, Customer>();
+
+function defaultCustomer(customerId: string): Customer {
   return {
     id: customerId,
     email: `${customerId}@example.com`,
@@ -22,7 +32,7 @@ function defaultCustomer(customerId) {
   };
 }
 
-app.get('/customers/:customerId', (req, res) => {
+app.get('/customers/:customerId', (req: Request, res: Response) => {
   const { customerId } = req.params;
   if (customerId === 'missing') {
     res.sendStatus(404);
@@ -33,7 +43,7 @@ app.get('/customers/:customerId', (req, res) => {
   res.status(200).json(customer);
 });
 
-app.patch('/customers/:customerId/preferences', (req, res) => {
+app.patch('/customers/:customerId/preferences', (req: Request, res: Response) => {
   const { customerId } = req.params;
   const payload = req.body || {};
 
