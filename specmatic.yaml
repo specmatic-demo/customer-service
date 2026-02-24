@@ -1,0 +1,19 @@
+version: 3
+systemUnderTest:
+  service:
+    $ref: "#/components/services/customerService"
+components:
+  sources:
+    centralContractRepo:
+      git:
+        url: https://github.com/specmatic-demo/central-contract-repository
+  services:
+    customerService:
+      description: "Customer Service"
+      definitions:
+        - definition:
+            source:
+              $ref: "#/components/sources/centralContractRepo"
+            specs:
+              - spec:
+                  path: "contracts/services/customer-service/http/openapi.yaml"
