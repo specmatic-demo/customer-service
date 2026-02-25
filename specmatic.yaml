@@ -8,6 +8,10 @@ dependencies:
         $ref: "#/components/services/customerServiceEvents"
         runOptions:
           $ref: "#/components/runOptions/customerServiceEventsMock"
+    - service:
+        $ref: "#/components/services/analyticsNotificationEvents"
+        runOptions:
+          $ref: "#/components/runOptions/analyticsNotificationEventsMock"
 components:
   sources:
     centralContractRepo:
@@ -32,6 +36,15 @@ components:
             specs:
               - spec:
                   path: "contracts/services/customer-service/events/asyncapi.yaml"
+    analyticsNotificationEvents:
+      description: "Analytics notification events dependency"
+      definitions:
+        - definition:
+            source:
+              $ref: "#/components/sources/centralContractRepo"
+            specs:
+              - spec:
+                  path: "contracts/services/notification-service/events/mqtt-asyncapi.yaml"
   runOptions:
     customerServiceEventsMock:
       asyncapi:
@@ -42,3 +55,9 @@ components:
         servers:
           - host: "localhost:5411"
             protocol: kafka
+    analyticsNotificationEventsMock:
+      asyncapi:
+        type: mock
+        servers:
+          - host: tcp://localhost:1883
+            protocol: mqtt

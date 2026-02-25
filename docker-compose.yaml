@@ -4,3 +4,8 @@ services:
     container_name: customer-service
     restart: unless-stopped
     network_mode: host
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: analytics-pipeline-mqtt
+    restart: unless-stopped
+    network_mode: host

@@ -1,6 +1,7 @@
 import express, { type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { Kafka, type Producer } from 'kafkajs';
+import mqtt from 'mqtt';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -12,6 +13,8 @@ const kafkaBrokers = (process.env.CUSTOMER_KAFKA_BROKERS || 'localhost:5411')
   .map((value) => value.trim())
   .filter(Boolean);
 const profileUpdatedTopic = process.env.CUSTOMER_PROFILE_UPDATED_TOPIC || 'customer.profile.updated';
+const analyticsMqttUrl = process.env.ANALYTICS_MQTT_URL || 'mqtt://localhost:1883';
+const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification/user';
 
 type CustomerPreferences = {
   newsletter: boolean;
@@ -30,6 +33,14 @@ type CustomerProfileUpdatedEvent = {
   customerId: string;
   updatedAt: string;
   tier: Customer['tier'];
+};
+
+type AnalyticsNotificationEvent = {
+  notificationId: string;
+  requestId: string;
+  title: string;
+  body: string;
+  priority: 'LOW' | 'NORMAL' | 'HIGH';
 };
 
 const customerStore = new Map<string, Customer>();
@@ -76,6 +87,42 @@ async function publishCustomerProfileUpdated(customer: Customer): Promise<void> 
   });
 }
 
+function publishAnalyticsNotification(event: AnalyticsNotificationEvent): void {
+  const client = mqtt.connect(analyticsMqttUrl, { reconnectPeriod: 0, connectTimeout: 1000 });
+  const payload = JSON.stringify(event);
+  let completed = false;
+
+  const done = (): void => {
+    if (completed) {
+      return;
+    }
+
+    completed = true;
+    client.end(true);
+  };
+
+  const timeout = setTimeout(() => {
+    done();
+  }, 1500);
+
+  client.once('connect', () => {
+    client.publish(analyticsNotificationTopic, payload, { qos: 1 }, (error?: Error | null) => {
+      if (error) {
+        console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${error.message}`);
+      }
+
+      clearTimeout(timeout);
+      done();
+    });
+  });
+
+  client.once('error', (error: Error) => {
+    console.error(`Failed to connect to analytics MQTT broker (${analyticsMqttUrl}): ${error.message}`);
+    clearTimeout(timeout);
+    done();
+  });
+}
+
 app.get('/customers/:customerId', (req: Request, res: Response) => {
   const { customerId } = req.params;
   if (customerId === 'missing') {
@@ -85,6 +132,52 @@ app.get('/customers/:customerId', (req: Request, res: Response) => {
 
   const customer = customerStore.get(customerId) || defaultCustomer(customerId);
   res.status(200).json(customer);
+});
+
+app.post('/customers', (req: Request, res: Response) => {
+  const payload = req.body || {};
+
+  if (
+    typeof payload.email !== 'string' ||
+    !payload.email.includes('@') ||
+    (payload.tier !== 'STANDARD' && payload.tier !== 'GOLD' && payload.tier !== 'PLATINUM') ||
+    typeof payload.preferences?.newsletter !== 'boolean' ||
+    typeof payload.preferences?.language !== 'string'
+  ) {
+    res.status(400).json({ error: 'Invalid customer payload' });
+    return;
+  }
+
+  const customer: Customer = {
+    id: randomUUID(),
+    email: payload.email,
+    tier: payload.tier,
+    preferences: {
+      newsletter: payload.preferences.newsletter,
+      language: payload.preferences.language
+    }
+  };
+
+  customerStore.set(customer.id, customer);
+  publishAnalyticsNotification({
+    notificationId: randomUUID(),
+    requestId: customer.id,
+    title: 'CustomerCreated',
+    body: `Customer ${customer.id} created`,
+    priority: 'NORMAL'
+  });
+  res.status(201).json(customer);
+});
+
+app.get('/customers/:customerId/preferences', (req: Request, res: Response) => {
+  const { customerId } = req.params;
+  if (customerId === 'missing') {
+    res.sendStatus(404);
+    return;
+  }
+
+  const customer = customerStore.get(customerId) || defaultCustomer(customerId);
+  res.status(200).json(customer.preferences);
 });
 
 app.patch('/customers/:customerId/preferences', async (req: Request, res: Response) => {
@@ -114,6 +207,14 @@ app.patch('/customers/:customerId/preferences', async (req: Request, res: Respon
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Failed to publish ${profileUpdatedTopic} event for customer ${customerId}: ${message}`);
   }
+
+  publishAnalyticsNotification({
+    notificationId: randomUUID(),
+    requestId: customerId,
+    title: 'CustomerPreferencesUpdated',
+    body: `Preferences updated for customer ${customerId}`,
+    priority: 'NORMAL'
+  });
 
   res.status(200).json(updated.preferences);
 });
