@@ -2,6 +2,11 @@ import express, { type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { Kafka, type Producer } from 'kafkajs';
 import mqtt from 'mqtt';
+import type {
+  AnalyticsNotificationEvent,
+  Customer,
+  CustomerProfileUpdatedEvent
+} from './types';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -15,33 +20,6 @@ const kafkaBrokers = (process.env.CUSTOMER_KAFKA_BROKERS || 'localhost:5411')
 const profileUpdatedTopic = process.env.CUSTOMER_PROFILE_UPDATED_TOPIC || 'customer.profile.updated';
 const analyticsMqttUrl = process.env.ANALYTICS_MQTT_URL || 'mqtt://localhost:1883';
 const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification/user';
-
-type CustomerPreferences = {
-  newsletter: boolean;
-  language: string;
-};
-
-type Customer = {
-  id: string;
-  email: string;
-  tier: 'STANDARD' | 'GOLD' | 'PLATINUM';
-  preferences: CustomerPreferences;
-};
-
-type CustomerProfileUpdatedEvent = {
-  eventId: string;
-  customerId: string;
-  updatedAt: string;
-  tier: Customer['tier'];
-};
-
-type AnalyticsNotificationEvent = {
-  notificationId: string;
-  requestId: string;
-  title: string;
-  body: string;
-  priority: 'LOW' | 'NORMAL' | 'HIGH';
-};
 
 const customerStore = new Map<string, Customer>();
 const kafka = new Kafka({
