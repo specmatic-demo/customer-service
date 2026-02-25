@@ -1,10 +1,12 @@
 import express, { type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
-import { Kafka, type Producer } from 'kafkajs';
+import { Kafka, type Consumer, type EachMessagePayload, type Producer } from 'kafkajs';
 import mqtt from 'mqtt';
 import type {
   AnalyticsNotificationEvent,
   Customer,
+  CustomerPreferenceSyncReplyEvent,
+  CustomerPreferenceSyncRequestEvent,
   CustomerProfileUpdatedEvent
 } from './types';
 
@@ -18,6 +20,9 @@ const kafkaBrokers = (process.env.CUSTOMER_KAFKA_BROKERS || 'localhost:5411')
   .map((value) => value.trim())
   .filter(Boolean);
 const profileUpdatedTopic = process.env.CUSTOMER_PROFILE_UPDATED_TOPIC || 'customer.profile.updated';
+const preferenceSyncRequestTopic = process.env.CUSTOMER_PREFERENCE_SYNC_REQUEST_TOPIC || 'customer.preference.sync.request';
+const preferenceSyncReplyTopic = process.env.CUSTOMER_PREFERENCE_SYNC_REPLY_TOPIC || 'customer.preference.sync.reply';
+const preferenceSyncConsumerGroup = process.env.CUSTOMER_PREFERENCE_SYNC_GROUP || 'customer-service-preference-sync';
 const analyticsMqttUrl = process.env.ANALYTICS_MQTT_URL || 'mqtt://localhost:1883';
 const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification/user';
 
@@ -27,6 +32,7 @@ const kafka = new Kafka({
   brokers: kafkaBrokers
 });
 const producer: Producer = kafka.producer();
+const consumer: Consumer = kafka.consumer({ groupId: preferenceSyncConsumerGroup });
 let kafkaConnected = false;
 
 function defaultCustomer(customerId: string): Customer {
@@ -63,6 +69,78 @@ async function publishCustomerProfileUpdated(customer: Customer): Promise<void> 
     topic: profileUpdatedTopic,
     messages: [{ key: customer.id, value: JSON.stringify(event) }]
   });
+}
+
+function parsePreferenceSyncRequest(value: string): CustomerPreferenceSyncRequestEvent | null {
+  try {
+    const parsed = JSON.parse(value) as Partial<CustomerPreferenceSyncRequestEvent>;
+    if (
+      typeof parsed.requestId !== 'string' ||
+      typeof parsed.customerId !== 'string' ||
+      typeof parsed.requestedAt !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      requestId: parsed.requestId,
+      customerId: parsed.customerId,
+      requestedAt: parsed.requestedAt
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildPreferenceSyncReply(
+  request: CustomerPreferenceSyncRequestEvent
+): CustomerPreferenceSyncReplyEvent {
+  const found = customerStore.get(request.customerId);
+  const status: CustomerPreferenceSyncReplyEvent['status'] = found ? 'SUCCESS' : 'NOT_FOUND';
+
+  return {
+    requestId: request.requestId,
+    customerId: request.customerId,
+    status,
+    syncedAt: new Date().toISOString(),
+    preferenceVersion: 1,
+    preferences: found
+      ? {
+          newsletter: String(found.preferences.newsletter),
+          language: found.preferences.language
+        }
+      : undefined
+  };
+}
+
+async function publishPreferenceSyncReply(reply: CustomerPreferenceSyncReplyEvent): Promise<void> {
+  await ensureProducerConnected();
+  await producer.send({
+    topic: preferenceSyncReplyTopic,
+    messages: [{ key: reply.customerId, value: JSON.stringify(reply) }]
+  });
+}
+
+async function handlePreferenceSyncRequest(payload: EachMessagePayload): Promise<void> {
+  const raw = payload.message.value?.toString();
+  if (!raw) {
+    return;
+  }
+
+  const request = parsePreferenceSyncRequest(raw);
+  if (!request) {
+    return;
+  }
+
+  const customer = customerStore.get(request.customerId) || defaultCustomer(request.customerId);
+  await publishCustomerProfileUpdated(customer);
+  await publishPreferenceSyncReply(buildPreferenceSyncReply(request));
+}
+
+async function startPreferenceSyncConsumer(): Promise<void> {
+  await consumer.connect();
+  await consumer.subscribe({ topic: preferenceSyncRequestTopic, fromBeginning: false });
+  await consumer.run({ eachMessage: handlePreferenceSyncRequest });
 }
 
 function publishAnalyticsNotification(event: AnalyticsNotificationEvent): void {
@@ -181,7 +259,6 @@ app.patch('/customers/:customerId/preferences', async (req: Request, res: Respon
   try {
     await publishCustomerProfileUpdated(updated);
   } catch (error: unknown) {
-
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Failed to publish ${profileUpdatedTopic} event for customer ${customerId}: ${message}`);
   }
@@ -197,6 +274,16 @@ app.patch('/customers/:customerId/preferences', async (req: Request, res: Respon
   res.status(200).json(updated.preferences);
 });
 
-app.listen(port, host, () => {
-  console.log(`customer-service listening on http://${host}:${port}`);
+async function start(): Promise<void> {
+  await ensureProducerConnected();
+  await startPreferenceSyncConsumer();
+  app.listen(port, host, () => {
+    console.log(`customer-service listening on http://${host}:${port}`);
+  });
+}
+
+start().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`Failed to start customer-service: ${message}`);
+  process.exit(1);
 });
