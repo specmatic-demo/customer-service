@@ -2,3 +2,5 @@ build/
 .specmatic/
 node_modules/
 kafka-logs/
+
+dist/
