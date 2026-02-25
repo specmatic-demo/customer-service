@@ -2,6 +2,12 @@ version: 3
 systemUnderTest:
   service:
     $ref: "#/components/services/customerService"
+dependencies:
+  services:
+    - service:
+        $ref: "#/components/services/customerServiceEvents"
+        runOptions:
+          $ref: "#/components/runOptions/customerServiceEventsMock"
 components:
   sources:
     centralContractRepo:
@@ -17,3 +23,22 @@ components:
             specs:
               - spec:
                   path: "contracts/services/customer-service/http/openapi.yaml"
+    customerServiceEvents:
+      description: "Customer Service events dependency"
+      definitions:
+        - definition:
+            source:
+              $ref: "#/components/sources/centralContractRepo"
+            specs:
+              - spec:
+                  path: "contracts/services/customer-service/events/asyncapi.yaml"
+  runOptions:
+    customerServiceEventsMock:
+      asyncapi:
+        type: mock
+        inMemoryBroker:
+          host: localhost
+          port: 5411
+        servers:
+          - host: "localhost:5411"
+            protocol: kafka
