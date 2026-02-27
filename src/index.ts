@@ -1,7 +1,6 @@
 import express, { type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { Kafka, type Consumer, type EachMessagePayload, type Producer } from 'kafkajs';
-import mqtt from 'mqtt';
 import type {
   AnalyticsNotificationEvent,
   Customer,
@@ -23,8 +22,7 @@ const profileUpdatedTopic = process.env.CUSTOMER_PROFILE_UPDATED_TOPIC || 'custo
 const preferenceSyncRequestTopic = process.env.CUSTOMER_PREFERENCE_SYNC_REQUEST_TOPIC || 'customer.preference.sync.request';
 const preferenceSyncReplyTopic = process.env.CUSTOMER_PREFERENCE_SYNC_REPLY_TOPIC || 'customer.preference.sync.reply';
 const preferenceSyncConsumerGroup = process.env.CUSTOMER_PREFERENCE_SYNC_GROUP || 'customer-service-preference-sync';
-const analyticsMqttUrl = process.env.ANALYTICS_MQTT_URL || 'mqtt://localhost:1883';
-const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification/user';
+const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification.user';
 
 const customerStore = new Map<string, Customer>();
 const kafka = new Kafka({
@@ -143,39 +141,11 @@ async function startPreferenceSyncConsumer(): Promise<void> {
   await consumer.run({ eachMessage: handlePreferenceSyncRequest });
 }
 
-function publishAnalyticsNotification(event: AnalyticsNotificationEvent): void {
-  const client = mqtt.connect(analyticsMqttUrl, { reconnectPeriod: 0, connectTimeout: 1000 });
-  const payload = JSON.stringify(event);
-  let completed = false;
-
-  const done = (): void => {
-    if (completed) {
-      return;
-    }
-
-    completed = true;
-    client.end(true);
-  };
-
-  const timeout = setTimeout(() => {
-    done();
-  }, 1500);
-
-  client.once('connect', () => {
-    client.publish(analyticsNotificationTopic, payload, { qos: 1 }, (error?: Error | null) => {
-      if (error) {
-        console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${error.message}`);
-      }
-
-      clearTimeout(timeout);
-      done();
-    });
-  });
-
-  client.once('error', (error: Error) => {
-    console.error(`Failed to connect to analytics MQTT broker (${analyticsMqttUrl}): ${error.message}`);
-    clearTimeout(timeout);
-    done();
+async function publishAnalyticsNotification(event: AnalyticsNotificationEvent): Promise<void> {
+  await ensureProducerConnected();
+  await producer.send({
+    topic: analyticsNotificationTopic,
+    messages: [{ key: event.requestId, value: JSON.stringify(event) }]
   });
 }
 
@@ -190,7 +160,7 @@ app.get('/customers/:customerId', (req: Request, res: Response) => {
   res.status(200).json(customer);
 });
 
-app.post('/customers', (req: Request, res: Response) => {
+app.post('/customers', async (req: Request, res: Response) => {
   const payload = req.body || {};
 
   if (
@@ -215,13 +185,18 @@ app.post('/customers', (req: Request, res: Response) => {
   };
 
   customerStore.set(customer.id, customer);
-  publishAnalyticsNotification({
-    notificationId: randomUUID(),
-    requestId: customer.id,
-    title: 'CustomerCreated',
-    body: `Customer ${customer.id} created`,
-    priority: 'NORMAL'
-  });
+  try {
+    await publishAnalyticsNotification({
+      notificationId: randomUUID(),
+      requestId: customer.id,
+      title: 'CustomerCreated',
+      body: `Customer ${customer.id} created`,
+      priority: 'NORMAL'
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${message}`);
+  }
   res.status(201).json(customer);
 });
 
@@ -263,13 +238,18 @@ app.patch('/customers/:customerId/preferences', async (req: Request, res: Respon
     console.error(`Failed to publish ${profileUpdatedTopic} event for customer ${customerId}: ${message}`);
   }
 
-  publishAnalyticsNotification({
-    notificationId: randomUUID(),
-    requestId: customerId,
-    title: 'CustomerPreferencesUpdated',
-    body: `Preferences updated for customer ${customerId}`,
-    priority: 'NORMAL'
-  });
+  try {
+    await publishAnalyticsNotification({
+      notificationId: randomUUID(),
+      requestId: customerId,
+      title: 'CustomerPreferencesUpdated',
+      body: `Preferences updated for customer ${customerId}`,
+      priority: 'NORMAL'
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${message}`);
+  }
 
   res.status(200).json(updated.preferences);
 });

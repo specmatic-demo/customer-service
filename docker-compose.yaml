@@ -11,11 +11,6 @@ services:
     network_mode: host
     environment:
       - CUSTOMER_KAFKA_BROKERS=localhost:5411
-  mqtt:
-    image: eclipse-mosquitto:2
-    container_name: analytics-pipeline-mqtt
-    restart: unless-stopped
-    network_mode: host
   kafka:
     image: apache/kafka:latest
     container_name: customer-service-kafka
