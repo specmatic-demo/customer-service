@@ -32,6 +32,7 @@ const kafka = new Kafka({
 const producer: Producer = kafka.producer();
 const consumer: Consumer = kafka.consumer({ groupId: preferenceSyncConsumerGroup });
 let kafkaConnected = false;
+let heartbeatTimer: NodeJS.Timeout | null = null;
 
 function defaultCustomer(customerId: string): Customer {
   return {
@@ -93,21 +94,15 @@ function parsePreferenceSyncRequest(value: string): CustomerPreferenceSyncReques
 function buildPreferenceSyncReply(
   request: CustomerPreferenceSyncRequestEvent
 ): CustomerPreferenceSyncReplyEvent {
-  const found = customerStore.get(request.customerId);
-  const status: CustomerPreferenceSyncReplyEvent['status'] = found ? 'SUCCESS' : 'NOT_FOUND';
+  const status: CustomerPreferenceSyncReplyEvent['status'] =
+    customerStore.has(request.customerId) ? 'SUCCESS' : 'NOT_FOUND';
 
   return {
     requestId: request.requestId,
     customerId: request.customerId,
     status,
     syncedAt: new Date().toISOString(),
-    preferenceVersion: 1,
-    preferences: found
-      ? {
-          newsletter: String(found.preferences.newsletter),
-          language: found.preferences.language
-        }
-      : undefined
+    preferenceVersion: 1
   };
 }
 
@@ -117,6 +112,34 @@ async function publishPreferenceSyncReply(reply: CustomerPreferenceSyncReplyEven
     topic: preferenceSyncReplyTopic,
     messages: [{ key: reply.customerId, value: JSON.stringify(reply) }]
   });
+}
+
+async function publishHeartbeatEvents(): Promise<void> {
+  const customer = defaultCustomer(`heartbeat-${randomUUID()}`);
+  const requestId = randomUUID();
+
+  await publishCustomerProfileUpdated(customer);
+  await publishPreferenceSyncReply({
+    requestId,
+    customerId: customer.id,
+    status: 'SUCCESS',
+    syncedAt: new Date().toISOString(),
+    preferenceVersion: 1
+  });
+}
+
+function startCustomerEventHeartbeat(): void {
+  void publishHeartbeatEvents().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to publish customer heartbeat events: ${message}`);
+  });
+
+  heartbeatTimer = setInterval(() => {
+    void publishHeartbeatEvents().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Failed to publish customer heartbeat events: ${message}`);
+    });
+  }, 3000);
 }
 
 async function handlePreferenceSyncRequest(payload: EachMessagePayload): Promise<void> {
@@ -257,10 +280,18 @@ app.patch('/customers/:customerId/preferences', async (req: Request, res: Respon
 async function start(): Promise<void> {
   await ensureProducerConnected();
   await startPreferenceSyncConsumer();
+  startCustomerEventHeartbeat();
   app.listen(port, host, () => {
     console.log(`customer-service listening on http://${host}:${port}`);
   });
 }
+
+process.on('SIGTERM', () => {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+});
 
 start().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
